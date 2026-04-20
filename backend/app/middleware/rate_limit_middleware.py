@@ -3,7 +3,11 @@
 from typing import Callable
 
 from fastapi import Request, Response
+from starlette.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
+
+from app.infrastructure.cache_keys import payment_rate_limit_key
+from app.infrastructure.redis_client import get_redis
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -19,6 +23,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self.limit_per_window = limit_per_window
         self.window_seconds = window_seconds
+        self.redis = get_redis()
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         """
@@ -38,6 +43,46 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
            - X-RateLimit-Remaining
         """
 
-        # Заглушка: ограничение пока не применяется.
-        # TODO: заменить на полноценную реализацию.
-        return await call_next(request)
+        if not self._is_payment_endpoint(request):
+            return await call_next(request)
+
+        subject = self._build_subject(request)
+        key = payment_rate_limit_key(subject)
+
+        current = await self.redis.incr(key)
+        if current == 1:
+            await self.redis.expire(key, self.window_seconds)
+
+        remaining = max(self.limit_per_window - current, 0)
+        ttl = await self.redis.ttl(key)
+
+        if current > self.limit_per_window:
+            response = JSONResponse(
+                status_code=429,
+                content={"detail": "Too Many Requests"},
+            )
+            response.headers["X-RateLimit-Limit"] = str(self.limit_per_window)
+            response.headers["X-RateLimit-Remaining"] = "0"
+            response.headers["X-RateLimit-Reset"] = str(max(ttl, 0))
+            return response
+
+        response = await call_next(request)
+        response.headers["X-RateLimit-Limit"] = str(self.limit_per_window)
+        response.headers["X-RateLimit-Remaining"] = str(remaining)
+        response.headers["X-RateLimit-Reset"] = str(max(ttl, 0))
+        return response
+
+    @staticmethod
+    def _is_payment_endpoint(request: Request) -> bool:
+        if request.method != "POST":
+            return False
+        path = request.url.path
+        return path.endswith("/pay") or path == "/api/payments/retry-demo"
+
+    @staticmethod
+    def _build_subject(request: Request) -> str:
+        user_id = request.headers.get("X-User-Id")
+        if user_id:
+            return f"user:{user_id}"
+        client_ip = request.client.host if request.client else "unknown"
+        return f"ip:{client_ip}"

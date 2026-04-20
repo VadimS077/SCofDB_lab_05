@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass
 
+from app.application.cache_service import CacheService
+
 
 @dataclass
 class OrderUpdatedEvent:
@@ -20,6 +22,9 @@ class CacheInvalidationEventBus:
       - order_card:v1:{order_id}
       - catalog:v1 (если изменение затрагивает агрегаты каталога).
     """
+    def __init__(self, cache_service: CacheService):
+        self.cache_service = cache_service
 
     async def publish_order_updated(self, event: OrderUpdatedEvent) -> None:
-        raise NotImplementedError("TODO: implement publish_order_updated")
+        await self.cache_service.invalidate_order_card(event.order_id)
+        await self.cache_service.invalidate_catalog()

@@ -3,4 +3,5 @@
 -- wrk -t4 -c100 -d30s -s loadtest/wrk/catalog.lua http://localhost:8082
 
 wrk.method = "GET"
-wrk.path = "/api/cache-demo/catalog?use_cache=true"
+local use_cache = os.getenv("USE_CACHE") or "true"
+wrk.path = "/api/cache-demo/catalog?use_cache=" .. use_cache
